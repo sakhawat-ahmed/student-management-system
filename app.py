@@ -6,16 +6,20 @@ import hashlib
 import time
 import sys
 
-# Page configuration
+# Page configuration - MUST be first Streamlit command
 st.set_page_config(
     page_title="Student Management System",
     page_icon="🎓",
     layout="wide"
 )
 
-# Initialize database
-@st.cache_resource
-# Replace the database initialization section with this:
+# Initialize session state at the VERY beginning
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user = None
+    st.session_state.role = None
+    st.session_state.user_id = None
+    st.session_state.page = "login"
 
 # Initialize database
 def init_database():
@@ -31,28 +35,20 @@ if db is None:
     st.error("Failed to connect to database. Please check the console for errors.")
     st.stop()
 
-# Session state initialization
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'user' not in st.session_state:
-    st.session_state.user = None
-if 'role' not in st.session_state:
-    st.session_state.role = None
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = None
-if 'page' not in st.session_state:
-    st.session_state.page = "login"
-
 # Helper function for rerun
 def rerun_app():
-    """Rerun the app - compatible with older Streamlit versions"""
-    if hasattr(st, 'experimental_rerun'):
-        st.experimental_rerun()
-    elif hasattr(st, 'rerun'):
+    """Rerun the app - compatible with all Streamlit versions"""
+    if hasattr(st, 'rerun'):
         st.rerun()
+    elif hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
     else:
-        # Manual rerun by raising an exception
-        raise st.script_runner.RerunException(st.script_runner.RerunData(None))
+        # Manual rerun using JavaScript
+        st.markdown("""
+        <script>
+        window.location.reload();
+        </script>
+        """, unsafe_allow_html=True)
 
 # Authentication functions
 def login():
@@ -104,7 +100,7 @@ def login():
                 st.session_state.user_id = user['user_id']
                 st.session_state.page = "dashboard"
                 st.success("Login successful!")
-                time.sleep(1)
+                time.sleep(0.5)
                 rerun_app()
             else:
                 st.error("Invalid username or password")
@@ -140,34 +136,75 @@ def register():
         col1, col2 = st.columns(2)
         
         with col1:
-            full_name = st.text_input("Full Name", placeholder="John Doe")
-            email = st.text_input("Email", placeholder="john@example.com")
-            username = st.text_input("Username", placeholder="johndoe")
+            full_name = st.text_input("Full Name *", placeholder="John Doe")
+            email = st.text_input("Email *", placeholder="john@example.com")
+            username = st.text_input("Username *", placeholder="johndoe")
         
         with col2:
-            password = st.text_input("Password", type="password")
-            confirm_password = st.text_input("Confirm Password", type="password")
-            role = st.selectbox("Role", ["student", "teacher"])
+            password = st.text_input("Password *", type="password")
+            confirm_password = st.text_input("Confirm Password *", type="password")
+            role = st.selectbox("Role *", ["student", "teacher"])
         
-        # Additional fields based on role
+        st.markdown("---")
+        
+        # Additional fields based on role - USING CONDITIONAL RENDERING
         if role == "student":
-            roll_number = st.text_input("Roll Number", placeholder="S001")
-            class_name = st.selectbox("Class", ["10", "11", "12"])
-            section = st.selectbox("Section", ["A", "B", "C", "D"])
+            st.subheader("Student Information")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                roll_number = st.text_input("Roll Number *", placeholder="S001")
+            with col2:
+                class_name = st.selectbox("Class *", ["10", "11", "12"])
+            with col3:
+                section = st.selectbox("Section *", ["A", "B", "C", "D"])
         else:
-            employee_id = st.text_input("Employee ID", placeholder="T001")
-            department = st.selectbox("Department", [
-                "Mathematics", "Science", "English", 
-                "Social Studies", "Computer Science", "Physical Education"
-            ])
+            # TEACHER SPECIFIC FIELDS
+            st.subheader("Teacher Information")
+            col1, col2 = st.columns(2)
+            with col1:
+                employee_id = st.text_input("Employee ID *", placeholder="T001")
+                department = st.selectbox("Department *", [
+                    "Mathematics", "Science", "English", 
+                    "Social Studies", "Computer Science", "Physical Education"
+                ])
+            with col2:
+                qualification = st.text_input("Qualification *", placeholder="Master's Degree in Computer Science")
+                experience_years = st.number_input("Experience (Years) *", min_value=0, max_value=50, value=0)
         
         submitted = st.form_submit_button("Register")
         
         if submitted:
-            if not all([full_name, email, username, password, confirm_password]):
-                st.error("Please fill all fields")
-            elif password != confirm_password:
-                st.error("Passwords do not match")
+            # Validation
+            validation_errors = []
+            
+            # Check required fields
+            if not full_name:
+                validation_errors.append("Full Name is required")
+            if not email:
+                validation_errors.append("Email is required")
+            if not username:
+                validation_errors.append("Username is required")
+            if not password:
+                validation_errors.append("Password is required")
+            if not confirm_password:
+                validation_errors.append("Confirm Password is required")
+            
+            if password != confirm_password:
+                validation_errors.append("Passwords do not match")
+            
+            # Role-specific validation
+            if role == "student":
+                if not roll_number:
+                    validation_errors.append("Roll Number is required for student")
+            elif role == "teacher":
+                if not employee_id:
+                    validation_errors.append("Employee ID is required for teacher")
+                if not qualification:
+                    validation_errors.append("Qualification is required for teacher")
+            
+            if validation_errors:
+                for error in validation_errors:
+                    st.error(error)
             else:
                 try:
                     # Create user
@@ -183,17 +220,17 @@ def register():
                         else:
                             db.create_teacher(
                                 user_id, employee_id, department,
-                                "Bachelor's Degree", "General", 0, "", ""
+                                qualification, "General", experience_years, "", ""
                             )
                         
-                        st.success("Registration successful! Please login.")
+                        st.success("✅ Registration successful! Please login.")
                         st.session_state.page = "login"
                         time.sleep(2)
                         rerun_app()
                     else:
-                        st.error("Registration failed. Username or email might already exist.")
+                        st.error("❌ Registration failed. Username or email might already exist.")
                 except Exception as e:
-                    st.error(f"Registration error: {str(e)}")
+                    st.error(f"❌ Registration error: {str(e)}")
     
     st.markdown('</div>', unsafe_allow_html=True)
     
@@ -215,7 +252,7 @@ def admin_dashboard():
         "⚙️ System Settings"
     ])
     
-    st.title(f"Admin Dashboard - {menu}")
+    st.title(f"Admin Dashboard")
     st.markdown("---")
     
     if menu == "📊 Dashboard":
@@ -259,7 +296,7 @@ def admin_dashboard():
         users = db.get_all_users()
         if users:
             df = pd.DataFrame(users)
-            df = df[['user_id', 'username', 'email', 'full_name', 'role', 'is_active', 'created_at']]
+            df = df[['user_id', 'username', 'email', 'full_name', 'role', 'created_at']]
             
             # Search and filter
             col1, col2 = st.columns(2)
@@ -280,15 +317,16 @@ def admin_dashboard():
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                st.write("### Update Status")
-                user_id = st.number_input("User ID to update", min_value=1, step=1)
+                st.write("### User Details")
+                user_id = st.number_input("User ID to view", min_value=1, step=1)
                 if user_id:
-                    is_active = st.selectbox("Status", [1, 0], format_func=lambda x: "Active" if x else "Inactive")
-                    if st.button("Update Status"):
-                        if db.update_user(user_id, is_active=is_active):
-                            st.success("User status updated!")
-                            time.sleep(1)
-                            rerun_app()
+                    user = next((u for u in users if u['user_id'] == user_id), None)
+                    if user:
+                        st.write(f"Username: {user['username']}")
+                        st.write(f"Role: {user['role']}")
+                        st.write(f"Email: {user['email']}")
+                        st.write(f"Name: {user['full_name']}")
+                        st.write(f"Created: {user['created_at']}")
             
             with col2:
                 st.write("### Send Message")
@@ -298,10 +336,15 @@ def admin_dashboard():
                 st.write("### Delete User")
                 del_user_id = st.number_input("User ID to delete", min_value=1, step=1, key="del_user")
                 if st.button("Delete User"):
-                    if db.delete_user(del_user_id):
+                    try:
+                        cursor = db.conn.cursor()
+                        cursor.execute("DELETE FROM users WHERE user_id = ?", (del_user_id,))
+                        db.conn.commit()
                         st.success("User deleted!")
                         time.sleep(1)
                         rerun_app()
+                    except Exception as e:
+                        st.error(f"Error deleting user: {str(e)}")
         else:
             st.info("No users found")
     
@@ -312,7 +355,7 @@ def admin_dashboard():
         if students:
             df = pd.DataFrame(students)
             df = df[['student_id', 'roll_number', 'full_name', 'class_name', 
-                    'section', 'phone', 'email', 'is_active']]
+                    'section', 'phone', 'email']]
             
             st.dataframe(df)
             
@@ -326,8 +369,9 @@ def admin_dashboard():
                 )
                 
                 if selected_student:
-                    student_id = int(selected_student.split(" - ")[0][1:])  # Extract ID
-                    student = next((s for s in students if s['student_id'] == student_id), None)
+                    # Extract roll number correctly
+                    roll_num = selected_student.split(" - ")[0]
+                    student = next((s for s in students if s['roll_number'] == roll_num), None)
                     
                     if student:
                         col1, col2 = st.columns(2)
@@ -341,10 +385,10 @@ def admin_dashboard():
                             st.write(f"**Phone:** {student['phone'] or 'N/A'}")
                             st.write(f"**Address:** {student['address'] or 'N/A'}")
                             st.write(f"**Guardian:** {student['guardian_name'] or 'N/A'}")
-                            st.write(f"**Status:** {'Active' if student['is_active'] else 'Inactive'}")
+                            st.write(f"**Guardian Phone:** {student['guardian_phone'] or 'N/A'}")
                         
                         # Student enrollments
-                        enrollments = db.get_student_enrollments(student_id)
+                        enrollments = db.get_student_enrollments(student['student_id'])
                         if enrollments:
                             st.subheader("📚 Enrolled Courses")
                             df_enrollments = pd.DataFrame(enrollments)
@@ -359,7 +403,7 @@ def admin_dashboard():
         if teachers:
             df = pd.DataFrame(teachers)
             df = df[['teacher_id', 'employee_id', 'full_name', 'department', 
-                    'qualification', 'experience', 'phone', 'email', 'is_active']]
+                    'qualification', 'experience', 'phone', 'email']]
             
             st.dataframe(df)
             
@@ -372,8 +416,9 @@ def admin_dashboard():
                 )
                 
                 if selected_teacher:
-                    teacher_id = int(selected_teacher.split(" - ")[0][1:])
-                    teacher = next((t for t in teachers if t['teacher_id'] == teacher_id), None)
+                    # Extract employee ID correctly
+                    emp_id = selected_teacher.split(" - ")[0]
+                    teacher = next((t for t in teachers if t['employee_id'] == emp_id), None)
                     
                     if teacher:
                         col1, col2 = st.columns(2)
@@ -387,10 +432,9 @@ def admin_dashboard():
                             st.write(f"**Qualification:** {teacher['qualification']}")
                             st.write(f"**Experience:** {teacher['experience']} years")
                             st.write(f"**Phone:** {teacher['phone'] or 'N/A'}")
-                            st.write(f"**Status:** {'Active' if teacher['is_active'] else 'Inactive'}")
                         
                         # Teacher's courses
-                        courses = db.get_courses_by_teacher(teacher_id)
+                        courses = db.get_courses_by_teacher(teacher['teacher_id'])
                         if courses:
                             st.subheader("📚 Assigned Courses")
                             df_courses = pd.DataFrame(courses)
@@ -439,7 +483,10 @@ def admin_dashboard():
                 if submitted:
                     teacher_id = None
                     if selected_teacher and selected_teacher != "Not Assigned":
-                        teacher_id = int(selected_teacher.split(" - ")[0][1:])
+                        emp_id = selected_teacher.split(" - ")[0]
+                        teacher = next((t for t in teachers if t['employee_id'] == emp_id), None)
+                        if teacher:
+                            teacher_id = teacher['teacher_id']
                     
                     if db.create_course(course_code, course_name, description, credits, 
                                       department, semester, max_students, teacher_id):
@@ -453,35 +500,76 @@ def admin_dashboard():
         st.subheader("Create New User")
         
         with st.form("create_user_form"):
-            role = st.selectbox("Role", ["student", "teacher", "admin"])
+            role = st.selectbox("Role *", ["student", "teacher", "admin"])
             
             col1, col2 = st.columns(2)
             with col1:
-                full_name = st.text_input("Full Name")
-                email = st.text_input("Email")
-                username = st.text_input("Username")
+                full_name = st.text_input("Full Name *")
+                email = st.text_input("Email *")
+                username = st.text_input("Username *")
             
             with col2:
-                password = st.text_input("Password", type="password")
-                confirm_password = st.text_input("Confirm Password", type="password")
+                password = st.text_input("Password *", type="password")
+                confirm_password = st.text_input("Confirm Password *", type="password")
             
-            # Role-specific fields
+            st.markdown("---")
+            
+            # Role-specific fields - CLEARLY SEPARATED
             if role == "student":
-                roll_number = st.text_input("Roll Number")
-                class_name = st.selectbox("Class", ["10", "11", "12"])
-                section = st.selectbox("Section", ["A", "B", "C", "D"])
+                st.subheader("Student Information")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    roll_number = st.text_input("Roll Number *")
+                with col2:
+                    class_name = st.selectbox("Class *", ["10", "11", "12"])
+                with col3:
+                    section = st.selectbox("Section *", ["A", "B", "C", "D"])
             elif role == "teacher":
-                employee_id = st.text_input("Employee ID")
-                department = st.selectbox("Department", [
-                    "Mathematics", "Science", "English", 
-                    "Social Studies", "Computer Science", "Physical Education"
-                ])
+                st.subheader("Teacher Information")
+                col1, col2 = st.columns(2)
+                with col1:
+                    employee_id = st.text_input("Employee ID *")
+                    department = st.selectbox("Department *", [
+                        "Mathematics", "Science", "English", 
+                        "Social Studies", "Computer Science", "Physical Education"
+                    ])
+                with col2:
+                    qualification = st.text_input("Qualification *", placeholder="Master's Degree in Computer Science")
+                    experience_years = st.number_input("Experience (Years) *", min_value=0, max_value=50, value=0)
             
             submitted = st.form_submit_button("Create User")
             
             if submitted:
+                validation_errors = []
+                
+                # Basic validation
+                if not full_name:
+                    validation_errors.append("Full Name is required")
+                if not email:
+                    validation_errors.append("Email is required")
+                if not username:
+                    validation_errors.append("Username is required")
+                if not password:
+                    validation_errors.append("Password is required")
+                if not confirm_password:
+                    validation_errors.append("Confirm Password is required")
+                
                 if password != confirm_password:
-                    st.error("Passwords do not match")
+                    validation_errors.append("Passwords do not match")
+                
+                # Role-specific validation
+                if role == "student":
+                    if not roll_number:
+                        validation_errors.append("Roll Number is required for student")
+                elif role == "teacher":
+                    if not employee_id:
+                        validation_errors.append("Employee ID is required for teacher")
+                    if not qualification:
+                        validation_errors.append("Qualification is required for teacher")
+                
+                if validation_errors:
+                    for error in validation_errors:
+                        st.error(error)
                 else:
                     user_id = db.create_user(username, password, role, email, full_name)
                     if user_id:
@@ -490,7 +578,7 @@ def admin_dashboard():
                                            "2000-01-01", "", "", "", "")
                         elif role == "teacher":
                             db.create_teacher(user_id, employee_id, department, 
-                                           "Bachelor's Degree", "General", 0, "", "")
+                                           qualification, "General", experience_years, "", "")
                         
                         st.success(f"{role.capitalize()} user created successfully!")
                         time.sleep(1)
@@ -613,15 +701,17 @@ def teacher_dashboard():
         courses = db.get_courses_by_teacher(teacher['teacher_id'])
         if courses:
             for idx, course in enumerate(courses):
-                st.write(f"**{course['course_code']} - {course['course_name']}** ({course['enrolled_students']} students)")
+                st.write(f"**{course['course_code']} - {course['course_name']}** ({course.get('enrolled_students', 0)} students)")
                 col1, col2 = st.columns(2)
                 with col1:
                     st.write(f"Credits: {course['credits']}")
                     st.write(f"Semester: {course['semester']}")
                     st.write(f"Department: {course['department']}")
+                    st.write(f"Teacher: {course.get('teacher_name', teacher['full_name'])}")
                 
                 with col2:
-                    st.write(f"Description: {course['description']}")
+                    st.write(f"Description: {course.get('description', 'No description')}")
+                    st.write(f"Max Students: {course.get('max_students', 50)}")
                 
                 # Course actions
                 col_btn1, col_btn2, col_btn3 = st.columns(3)
@@ -703,24 +793,105 @@ def teacher_dashboard():
     elif menu == "👥 My Students":
         st.subheader("My Students")
         
-        courses = db.get_courses_by_teacher(teacher['teacher_id'])
-        if courses:
-            all_students = []
-            for course in courses:
-                enrollments = db.get_course_enrollments(course['course_id'])
-                for enrollment in enrollments:
-                    enrollment['course_code'] = course['course_code']
-                    enrollment['course_name'] = course['course_name']
-                    all_students.append(enrollment)
+        # Get all students taught by this teacher
+        students = db.get_students_by_teacher(teacher['teacher_id'])
+        
+        if students:
+            # Display statistics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                unique_students = len(set([s['student_id'] for s in students]))
+                st.metric("Total Unique Students", unique_students)
+            with col2:
+                total_courses = len(set([s['course_code'] for s in students]))
+                st.metric("Courses Teaching", total_courses)
+            with col3:
+                if total_courses > 0:
+                    avg_students = unique_students / total_courses
+                    st.metric("Avg Students per Course", f"{avg_students:.1f}")
+                else:
+                    st.metric("Avg Students per Course", 0)
             
-            if all_students:
-                df = pd.DataFrame(all_students)
-                df = df[['roll_number', 'student_name', 'course_code', 'course_name', 'grade', 'marks']]
-                st.dataframe(df)
-            else:
-                st.info("No students enrolled in your courses")
+            # Display students by course
+            courses = {}
+            for student in students:
+                course_key = f"{student['course_code']} - {student['course_name']}"
+                if course_key not in courses:
+                    courses[course_key] = []
+                courses[course_key].append(student)
+            
+            for course_key, course_students in courses.items():
+                with st.expander(f"📚 {course_key} ({len(course_students)} students)"):
+                    df_students = pd.DataFrame(course_students)
+                    df_display = df_students[['roll_number', 'student_name', 'class_name', 'section', 'student_email']]
+                    st.dataframe(df_display, use_container_width=True)
+                    
+                    # Quick actions
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # Find course_id for this course
+                        teacher_courses = db.get_courses_by_teacher(teacher['teacher_id'])
+                        course_id = None
+                        for c in teacher_courses:
+                            if f"{c['course_code']} - {c['course_name']}" == course_key:
+                                course_id = c['course_id']
+                                break
+                        
+                        if course_id and st.button(f"📋 Take Attendance", key=f"att_{course_key}"):
+                            st.subheader(f"Take Attendance for {course_key}")
+                            enrollments = db.get_course_enrollments(course_id)
+                            if enrollments:
+                                attendance_date = st.date_input("Date", value=date.today())
+                                attendance_data = []
+                                for idx, enrollment in enumerate(enrollments):
+                                    st.write(f"{enrollment['roll_number']} - {enrollment['student_name']}")
+                                    status = st.selectbox(
+                                        "Status",
+                                        ["present", "absent", "late", "excused"],
+                                        key=f"att_{course_key}_{idx}",
+                                        index=1
+                                    )
+                                    attendance_data.append({
+                                        'student_id': enrollment['student_id'],
+                                        'status': status
+                                    })
+                                
+                                if st.button("Submit Attendance"):
+                                    success_count = 0
+                                    for data in attendance_data:
+                                        if db.mark_attendance(
+                                            data['student_id'], course_id, 
+                                            str(attendance_date), data['status']
+                                        ):
+                                            success_count += 1
+                                    
+                                    if success_count == len(attendance_data):
+                                        st.success("Attendance marked successfully!")
+                                    else:
+                                        st.warning(f"Marked attendance for {success_count}/{len(attendance_data)} students")
+                                    time.sleep(1)
+                                    rerun_app()
+                    with col2:
+                        if course_id and st.button(f"📝 Create Assignment", key=f"assign_{course_key}"):
+                            st.subheader(f"Create Assignment for {course_key}")
+                            with st.form(f"assignment_form_{course_key}"):
+                                title = st.text_input("Assignment Title")
+                                description = st.text_area("Description")
+                                total_marks = st.number_input("Total Marks", min_value=1, max_value=100, value=100)
+                                weightage = st.number_input("Weightage (%)", min_value=1, max_value=100, value=100)
+                                due_date = st.date_input("Due Date", value=date.today())
+                                
+                                if st.form_submit_button("Create Assignment"):
+                                    assignment_id = db.create_assignment(
+                                        course_id, teacher['teacher_id'], title, description,
+                                        total_marks, weightage, str(due_date)
+                                    )
+                                    if assignment_id:
+                                        st.success("Assignment created successfully!")
+                                        time.sleep(1)
+                                        rerun_app()
         else:
-            st.info("No courses assigned")
+            st.info("No students enrolled in your courses yet")
     
     elif menu == "📋 Attendance":
         st.subheader("Take Attendance")
@@ -1085,7 +1256,7 @@ def student_dashboard():
                         rerun_app()
                 st.markdown("---")
         else:
-            st.info("No available courses or you're already enrolled in all courses for your semester")
+            st.info("No courses available for enrollment or you're already enrolled in all available courses.")
     
     elif menu == "👤 My Profile":
         st.subheader("My Profile")
@@ -1135,14 +1306,16 @@ def student_dashboard():
 
 # Main application
 def main():
-    # Sidebar logout button
+    # Sidebar logout button - only show if logged in
     if st.session_state.logged_in:
         with st.sidebar:
-            if st.button("🚪 Logout"):
+            st.markdown("---")
+            if st.button("🚪 Logout", type="primary"):
+                # Clear all session state
                 for key in list(st.session_state.keys()):
                     del st.session_state[key]
-                # Use JavaScript to reload the page
-                st.markdown('<meta http-equiv="refresh" content="0">', unsafe_allow_html=True)
+                # Force page reload
+                rerun_app()
     
     # Page routing
     if not st.session_state.logged_in:
@@ -1150,6 +1323,9 @@ def main():
             login()
         elif st.session_state.page == "register":
             register()
+        else:
+            st.session_state.page = "login"
+            login()
     else:
         if st.session_state.page == "dashboard":
             if st.session_state.role == "admin":
@@ -1158,6 +1334,11 @@ def main():
                 teacher_dashboard()
             elif st.session_state.role == "student":
                 student_dashboard()
+            else:
+                st.error("Invalid role!")
+                st.session_state.logged_in = False
+                st.session_state.page = "login"
+                rerun_app()
         else:
             # Default to dashboard
             st.session_state.page = "dashboard"
