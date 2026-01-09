@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from database import Database
 import hashlib
 import time
 import sys
+import os
 
 # Page configuration - MUST be first Streamlit command
 st.set_page_config(
@@ -20,6 +21,7 @@ if 'logged_in' not in st.session_state:
     st.session_state.role = None
     st.session_state.user_id = None
     st.session_state.page = "login"
+    st.session_state.viewing_submissions = None
 
 # Initialize database
 def init_database():
@@ -949,73 +951,165 @@ def teacher_dashboard():
     elif menu == "📝 Assignments":
         st.subheader("Assignments")
         
-        courses = db.get_courses_by_teacher(teacher['teacher_id'])
-        if courses:
-            course_options = [f"{c['course_code']} - {c['course_name']}" for c in courses]
-            selected_course = st.selectbox(
-                "Select Course",
-                options=course_options
-            )
+        # Check if we're viewing submissions for a specific assignment
+        if 'viewing_submissions' in st.session_state:
+            assignment_id = st.session_state.viewing_submissions
+            assignments = db.get_assignments_by_course(assignment_id)
+            assignment = None
+            if assignments:
+                # Find the specific assignment
+                for a in assignments:
+                    if a['assignment_id'] == assignment_id:
+                        assignment = a
+                        break
             
-            if selected_course:
-                course_id = next(c['course_id'] for c in courses if f"{c['course_code']} - {c['course_name']}" == selected_course)
+            if assignment:
+                st.subheader(f"Submissions for: {assignment['title']}")
                 
-                # Create new assignment
-                st.subheader("Create New Assignment")
-                with st.form("create_assignment_form"):
-                    title = st.text_input("Assignment Title")
-                    description = st.text_area("Description")
-                    total_marks = st.number_input("Total Marks", min_value=1, max_value=100, value=100)
-                    weightage = st.number_input("Weightage (%)", min_value=1, max_value=100, value=100)
-                    due_date = st.date_input("Due Date", value=date.today())
-                    
-                    submitted = st.form_submit_button("Create Assignment")
-                    
-                    if submitted:
-                        assignment_id = db.create_assignment(
-                            course_id, teacher['teacher_id'], title, description,
-                            total_marks, weightage, str(due_date)
-                        )
-                        if assignment_id:
-                            st.success("Assignment created successfully!")
-                            time.sleep(1)
-                            rerun_app()
+                submissions = db.get_assignment_submissions(assignment_id)
                 
-                # View existing assignments
-                st.subheader("Existing Assignments")
-                assignments = db.get_assignments_by_course(course_id)
-                if assignments:
-                    for idx, assignment in enumerate(assignments):
-                        st.write(f"**{assignment['title']}** - Due: {assignment['due_date']}")
-                        st.write(f"Description: {assignment['description']}")
-                        st.write(f"Total Marks: {assignment['total_marks']}, Weightage: {assignment['weightage']}%")
-                        
-                        # Grade assignment
-                        if st.button("Grade Assignment", key=f"grade_{idx}"):
-                            grades = db.get_assignment_grades(assignment['assignment_id'])
-                            if grades:
-                                for grade_idx, grade in enumerate(grades):
-                                    st.write(f"{grade['roll_number']} - {grade['student_name']}")
-                                    current_marks = grade.get('marks_obtained', 0)
-                                    marks = st.number_input(
-                                        "Marks Obtained", 
-                                        min_value=0.0, 
-                                        max_value=float(assignment['total_marks']),
-                                        value=float(current_marks),
-                                        key=f"marks_{idx}_{grade_idx}"
-                                    )
-                                    remarks = st.text_input("Remarks", value=grade.get('remarks', ''), key=f"remarks_{idx}_{grade_idx}")
-                                    
-                                    if st.button("Update Grade", key=f"update_{idx}_{grade_idx}"):
-                                        if db.update_grade(grade['student_id'], assignment['assignment_id'], marks, remarks):
-                                            st.success("Grade updated!")
-                                            time.sleep(1)
-                                            rerun_app()
-                            else:
-                                st.info("No students to grade")
-                        st.markdown("---")
+                if submissions:
+                    # Statistics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        total = len(submissions)
+                        st.metric("Total Submissions", total)
+                    with col2:
+                        graded = len([s for s in submissions if s.get('status') == 'graded'])
+                        st.metric("Graded", graded)
+                    with col3:
+                        pending = total - graded
+                        st.metric("Pending", pending)
+                    
+                    # Submissions table
+                    for sub_idx, submission in enumerate(submissions):
+                        with st.expander(f"{submission['roll_number']} - {submission['student_name']}"):
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"**Class:** {submission['class_name']}-{submission['section']}")
+                                st.write(f"**Submitted:** {submission['submission_date']}")
+                                if submission.get('submission_text'):
+                                    st.write(f"**Text Submission:**")
+                                    st.info(submission['submission_text'])
+                                if submission.get('submission_file'):
+                                    st.write(f"**File:** {submission['submission_file']}")
+                                    # Show download button for file
+                                    file_path = f"assignments/{submission['roll_number']}_{assignment_id}_{submission['submission_file']}"
+                                    if os.path.exists(file_path):
+                                        with open(file_path, "rb") as file:
+                                            st.download_button(
+                                                label="Download File",
+                                                data=file,
+                                                file_name=submission['submission_file'],
+                                                mime="application/octet-stream"
+                                            )
+                                    else:
+                                        st.warning("File not found on server")
+                            with col2:
+                                if submission.get('status') == 'graded':
+                                    st.success(f"**GRADED: {submission.get('marks_obtained', 0)}/{submission['total_marks']}**")
+                                    if submission.get('feedback'):
+                                        st.write(f"**Feedback:** {submission['feedback']}")
+                                    if submission.get('graded_at'):
+                                        st.write(f"**Graded on:** {submission['graded_at']}")
+                                else:
+                                    # Grade submission form
+                                    with st.form(key=f"grade_form_{sub_idx}"):
+                                        marks = st.number_input(
+                                            "Marks",
+                                            min_value=0.0,
+                                            max_value=float(submission['total_marks']),
+                                            value=0.0,
+                                            key=f"marks_{sub_idx}"
+                                        )
+                                        feedback = st.text_area("Feedback", key=f"feedback_{sub_idx}")
+                                        
+                                        if st.form_submit_button("Grade Submission"):
+                                            if db.grade_submission(
+                                                submission['submission_id'],
+                                                marks,
+                                                feedback,
+                                                teacher['teacher_id']
+                                            ):
+                                                st.success("Submission graded!")
+                                                time.sleep(1)
+                                                rerun_app()
+                else:
+                    st.info("No submissions yet for this assignment.")
+                
+                if st.button("← Back to Assignments"):
+                    del st.session_state.viewing_submissions
+                    rerun_app()
+            else:
+                st.error("Assignment not found!")
+                del st.session_state.viewing_submissions
+                rerun_app()
         else:
-            st.info("No courses assigned")
+            # Show assignment management interface
+            courses = db.get_courses_by_teacher(teacher['teacher_id'])
+            if courses:
+                course_options = [f"{c['course_code']} - {c['course_name']}" for c in courses]
+                selected_course = st.selectbox(
+                    "Select Course",
+                    options=course_options
+                )
+                
+                if selected_course:
+                    course_id = next(c['course_id'] for c in courses if f"{c['course_code']} - {c['course_name']}" == selected_course)
+                    
+                    # Create new assignment
+                    st.subheader("Create New Assignment")
+                    with st.form("create_assignment_form"):
+                        title = st.text_input("Assignment Title")
+                        description = st.text_area("Description")
+                        total_marks = st.number_input("Total Marks", min_value=1, max_value=100, value=100)
+                        weightage = st.number_input("Weightage (%)", min_value=1, max_value=100, value=100)
+                        due_date = st.date_input("Due Date", value=date.today())
+                        
+                        submitted = st.form_submit_button("Create Assignment")
+                        
+                        if submitted:
+                            assignment_id = db.create_assignment(
+                                course_id, teacher['teacher_id'], title, description,
+                                total_marks, weightage, str(due_date)
+                            )
+                            if assignment_id:
+                                st.success("Assignment created successfully!")
+                                time.sleep(1)
+                                rerun_app()
+                    
+                    # View existing assignments
+                    st.subheader("Existing Assignments")
+                    assignments = db.get_assignments_by_course(course_id)
+                    if assignments:
+                        for idx, assignment in enumerate(assignments):
+                            st.markdown(f"### {assignment['title']}")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"**Due:** {assignment['due_date']}")
+                                st.write(f"**Total Marks:** {assignment['total_marks']}")
+                            with col2:
+                                st.write(f"**Weightage:** {assignment['weightage']}%")
+                                st.write(f"**Description:** {assignment['description']}")
+                            
+                            # View submissions button
+                            col_btn1, col_btn2 = st.columns(2)
+                            with col_btn1:
+                                if st.button(f"View Submissions", key=f"view_subs_{idx}"):
+                                    st.session_state.viewing_submissions = assignment['assignment_id']
+                                    rerun_app()
+                            with col_btn2:
+                                if st.button(f"Delete Assignment", key=f"delete_{idx}"):
+                                    if db.delete_assignment(assignment['assignment_id']):
+                                        st.success("Assignment deleted!")
+                                        time.sleep(1)
+                                        rerun_app()
+                            
+                            st.markdown("---")
+                    else:
+                        st.info("No assignments created for this course yet.")
+            else:
+                st.info("No courses assigned")
     
     elif menu == "📊 Grades":
         st.subheader("Manage Grades")
@@ -1033,21 +1127,90 @@ def teacher_dashboard():
                 enrollments = db.get_course_enrollments(course_id)
                 
                 if enrollments:
+                    # Overall course statistics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Students", len(enrollments))
+                    with col2:
+                        avg_marks = sum(e.get('marks', 0) for e in enrollments) / len(enrollments) if enrollments else 0
+                        st.metric("Average Marks", f"{avg_marks:.1f}%")
+                    with col3:
+                        assignments = db.get_assignments_by_course(course_id)
+                        st.metric("Total Assignments", len(assignments))
+                    
                     st.write("### Student Grades")
                     for idx, enrollment in enumerate(enrollments):
-                        st.write(f"**{enrollment['roll_number']} - {enrollment['student_name']}**")
-                        grades = db.get_student_grades(enrollment['student_id'], course_id)
-                        if grades:
-                            df_grades = pd.DataFrame(grades)
-                            df_grades = df_grades[['title', 'marks_obtained', 'total_marks', 'remarks']]
-                            st.dataframe(df_grades)
+                        with st.expander(f"{enrollment['roll_number']} - {enrollment['student_name']}"):
+                            # Student info
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"**Class:** {enrollment['class_name']}-{enrollment['section']}")
+                                st.write(f"**Course Grade:** {enrollment['grade'] or 'N/A'}")
+                                st.write(f"**Course Marks:** {enrollment['marks'] or '0'}%")
+                            with col2:
+                                st.write(f"**Attendance:** {enrollment.get('attendance_percentage', 0)}%")
+                                st.write(f"**Status:** {enrollment['status']}")
                             
-                            # Current course grade
-                            st.write(f"Course Grade: {enrollment['grade'] or 'N/A'}")
-                            st.write(f"Course Marks: {enrollment['marks'] or '0'}%")
-                        else:
-                            st.info("No grades yet")
-                        st.markdown("---")
+                            # Assignment grades
+                            st.subheader("Assignment Grades")
+                            grades = db.get_student_grades(enrollment['student_id'], course_id)
+                            if grades:
+                                df_grades = pd.DataFrame(grades)
+                                df_grades = df_grades[['title', 'marks_obtained', 'total_marks', 'remarks']]
+                                st.dataframe(df_grades)
+                                
+                                # Calculate assignment average
+                                if not df_grades.empty:
+                                    total_obtained = df_grades['marks_obtained'].sum()
+                                    total_possible = df_grades['total_marks'].sum()
+                                    if total_possible > 0:
+                                        assignment_avg = (total_obtained / total_possible) * 100
+                                        st.write(f"**Assignment Average:** {assignment_avg:.1f}%")
+                            else:
+                                st.info("No grades yet")
+                            
+                            # Quick grade assignment button
+                            if assignments:
+                                st.subheader("Quick Grade")
+                                selected_assignment = st.selectbox(
+                                    "Select Assignment to Grade",
+                                    options=[f"{a['title']} (Due: {a['due_date']})" for a in assignments],
+                                    key=f"assign_select_{idx}"
+                                )
+                                
+                                if selected_assignment:
+                                    assignment = next(a for a in assignments if f"{a['title']} (Due: {a['due_date']})" == selected_assignment)
+                                    submissions = db.get_assignment_submissions(assignment['assignment_id'])
+                                    student_sub = next((s for s in submissions if s['student_id'] == enrollment['student_id']), None)
+                                    
+                                    if student_sub:
+                                        if student_sub.get('status') == 'graded':
+                                            st.success(f"Already graded: {student_sub['marks_obtained']}/{assignment['total_marks']}")
+                                            if student_sub.get('feedback'):
+                                                st.write(f"Feedback: {student_sub['feedback']}")
+                                        else:
+                                            with st.form(key=f"quick_grade_{idx}"):
+                                                marks = st.number_input(
+                                                    "Marks",
+                                                    min_value=0.0,
+                                                    max_value=float(assignment['total_marks']),
+                                                    value=0.0,
+                                                    key=f"quick_marks_{idx}"
+                                                )
+                                                feedback = st.text_area("Feedback", key=f"quick_feedback_{idx}")
+                                                
+                                                if st.form_submit_button("Submit Grade"):
+                                                    if db.grade_submission(
+                                                        student_sub['submission_id'],
+                                                        marks,
+                                                        feedback,
+                                                        teacher['teacher_id']
+                                                    ):
+                                                        st.success("Grade submitted!")
+                                                        time.sleep(1)
+                                                        rerun_app()
+                                    else:
+                                        st.info("Student hasn't submitted this assignment yet.")
                 else:
                     st.info("No students enrolled")
         else:
@@ -1070,6 +1233,7 @@ def student_dashboard():
         "📚 My Courses",
         "📅 My Attendance",
         "📈 My Grades",
+        "📝 My Assignments",  # NEW OPTION
         "➕ Enroll in Courses",
         "👤 My Profile"
     ]
@@ -1230,6 +1394,145 @@ def student_dashboard():
         else:
             st.info("No courses enrolled")
     
+    elif menu == "📝 My Assignments":
+        st.subheader("My Assignments")
+        
+        # Get all assignments for the student
+        assignments = db.get_student_assignments(student['student_id'])
+        
+        if assignments:
+            # Filter options
+            col1, col2 = st.columns(2)
+            with col1:
+                filter_status = st.selectbox(
+                    "Filter by status",
+                    ["All", "Pending", "Submitted", "Graded", "Overdue"]
+                )
+            with col2:
+                filter_course = st.selectbox(
+                    "Filter by course",
+                    ["All"] + list(set([f"{a['course_code']} - {a['course_name']}" for a in assignments]))
+                )
+            
+            # Filter assignments
+            filtered_assignments = assignments
+            if filter_status != "All":
+                if filter_status == "Pending":
+                    filtered_assignments = [a for a in assignments if not a.get('submission_id')]
+                elif filter_status == "Submitted":
+                    filtered_assignments = [a for a in assignments if a.get('submission_id') and a.get('submission_status') == 'submitted']
+                elif filter_status == "Graded":
+                    filtered_assignments = [a for a in assignments if a.get('submission_id') and a.get('submission_status') == 'graded']
+                elif filter_status == "Overdue":
+                    filtered_assignments = [a for a in assignments if a.get('due_date') and datetime.strptime(a['due_date'], '%Y-%m-%d') < datetime.now()]
+            
+            if filter_course != "All":
+                filtered_assignments = [a for a in filtered_assignments if f"{a['course_code']} - {a['course_name']}" == filter_course]
+            
+            # Display assignments
+            for idx, assignment in enumerate(filtered_assignments):
+                # Check if overdue
+                is_overdue = False
+                if assignment.get('due_date'):
+                    try:
+                        due_date = datetime.strptime(assignment['due_date'], '%Y-%m-%d')
+                        is_overdue = due_date < datetime.now()
+                    except:
+                        pass
+                
+                # Assignment card
+                with st.container():
+                    st.markdown(f"### {assignment['title']}")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write(f"**Course:** {assignment['course_code']} - {assignment['course_name']}")
+                        st.write(f"**Teacher:** {assignment['teacher_name']}")
+                        st.write(f"**Due Date:** {assignment['due_date']}")
+                        if is_overdue and not assignment.get('submission_id'):
+                            st.error("⚠️ **OVERDUE**")
+                    
+                    with col2:
+                        st.write(f"**Total Marks:** {assignment['total_marks']}")
+                        st.write(f"**Weightage:** {assignment['weightage']}%")
+                        
+                        # Submission status
+                        if assignment.get('submission_id'):
+                            if assignment.get('submission_status') == 'graded':
+                                st.success(f"✅ **GRADED: {assignment.get('marks_obtained', 0)}/{assignment['total_marks']}**")
+                            else:
+                                st.info(f"📤 **Submitted on:** {assignment.get('submission_date', 'N/A')}")
+                        else:
+                            st.warning("📝 **Not Submitted**")
+                    
+                    # Expand for more details
+                    with st.expander("View Details & Submit"):
+                        st.write(f"**Description:** {assignment.get('description', 'No description provided')}")
+                        
+                        # Submission section
+                        st.markdown("---")
+                        st.subheader("Submission")
+                        
+                        if assignment.get('submission_id'):
+                            # Already submitted
+                            st.success("✅ Assignment submitted")
+                            if assignment.get('submission_text'):
+                                st.write(f"**Your submission:** {assignment['submission_text']}")
+                            if assignment.get('submission_file'):
+                                st.write(f"**Uploaded file:** {assignment['submission_file']}")
+                            
+                            if assignment.get('submission_status') == 'graded':
+                                st.markdown("---")
+                                st.subheader("Grading Feedback")
+                                st.write(f"**Marks Obtained:** {assignment.get('marks_obtained', 0)}/{assignment['total_marks']}")
+                                if assignment.get('feedback'):
+                                    st.write(f"**Feedback:** {assignment['feedback']}")
+                                if assignment.get('graded_at'):
+                                    st.write(f"**Graded on:** {assignment['graded_at']}")
+                        else:
+                            # Submit assignment
+                            st.write("Submit your assignment:")
+                            
+                            with st.form(key=f"submit_form_{idx}"):
+                                submission_text = st.text_area("Your answer/description", height=150)
+                                
+                                # File upload
+                                uploaded_file = st.file_uploader(
+                                    "Upload file (PDF, DOC, TXT, etc.)",
+                                    type=['pdf', 'doc', 'docx', 'txt', 'jpg', 'png', 'zip', 'rar'],
+                                    key=f"file_{idx}"
+                                )
+                                
+                                submitted = st.form_submit_button("Submit Assignment")
+                                
+                                if submitted:
+                                    if not submission_text and not uploaded_file:
+                                        st.error("Please provide either text submission or upload a file")
+                                    else:
+                                        # Handle file upload
+                                        file_path = ""
+                                        if uploaded_file:
+                                            # Save file
+                                            file_path = f"{student['roll_number']}_{assignment['assignment_id']}_{uploaded_file.name}"
+                                            save_path = f"assignments/{file_path}"
+                                            with open(save_path, "wb") as f:
+                                                f.write(uploaded_file.getbuffer())
+                                        
+                                        # Submit assignment
+                                        if db.submit_assignment(
+                                            assignment['assignment_id'],
+                                            student['student_id'],
+                                            submission_text,
+                                            file_path
+                                        ):
+                                            st.success("✅ Assignment submitted successfully!")
+                                            time.sleep(1)
+                                            rerun_app()
+                    
+                    st.markdown("---")
+        else:
+            st.info("No assignments found for your enrolled courses.")
+    
     elif menu == "➕ Enroll in Courses":
         st.subheader("Enroll in Courses")
         
@@ -1345,4 +1648,6 @@ def main():
             rerun_app()
 
 if __name__ == "__main__":
+    # Create assignments directory if not exists
+    os.makedirs("assignments", exist_ok=True)
     main()
