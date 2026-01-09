@@ -1,6 +1,7 @@
 import sqlite3
 import bcrypt
 import streamlit as st
+import os
 
 class Database:
     def __init__(self):
@@ -173,6 +174,9 @@ class Database:
                 )
                 self.conn.commit()
                 st.success("✅ Default admin user created: username='admin', password='admin123'")
+            
+            # Create assignments directory if not exists
+            os.makedirs("assignments", exist_ok=True)
             
             cursor.close()
             return True
@@ -740,3 +744,146 @@ class Database:
         except Exception as e:
             st.error(f"❌ Error fetching grades: {str(e)}")
             return []
+    
+    # Assignment Submission Methods
+    def submit_assignment(self, assignment_id, student_id, submission_text="", submission_file=""):
+        """Submit an assignment"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO assignment_submissions 
+                (assignment_id, student_id, submission_text, submission_file, submission_date, status)
+                VALUES (?, ?, ?, ?, DATETIME('now'), 'submitted')
+            """, (assignment_id, student_id, submission_text, submission_file))
+            self.conn.commit()
+            cursor.close()
+            return True
+        except Exception as e:
+            st.error(f"❌ Error submitting assignment: {str(e)}")
+            return False
+    
+    def get_student_assignments(self, student_id):
+        """Get all assignments for a student with submission status"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    a.*,
+                    c.course_code,
+                    c.course_name,
+                    u.full_name as teacher_name,
+                    s.submission_id,
+                    s.submission_text,
+                    s.submission_file,
+                    s.submission_date,
+                    s.status as submission_status,
+                    s.marks_obtained,
+                    s.feedback,
+                    s.graded_at
+                FROM assignments a
+                JOIN courses c ON a.course_id = c.course_id
+                JOIN teachers t ON a.teacher_id = t.teacher_id
+                JOIN users u ON t.user_id = u.user_id
+                LEFT JOIN enrollments e ON a.course_id = e.course_id AND e.student_id = ?
+                LEFT JOIN assignment_submissions s ON a.assignment_id = s.assignment_id AND s.student_id = ?
+                WHERE e.student_id = ?
+                ORDER BY a.due_date DESC
+            """, (student_id, student_id, student_id))
+            assignments = cursor.fetchall()
+            cursor.close()
+            return [dict(assignment) for assignment in assignments]
+        except Exception as e:
+            st.error(f"❌ Error fetching student assignments: {str(e)}")
+            return []
+    
+    def get_assignment_submissions(self, assignment_id):
+        """Get all submissions for an assignment"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    s.*,
+                    st.roll_number,
+                    u.full_name as student_name,
+                    st.class_name,
+                    st.section,
+                    a.title as assignment_title,
+                    a.total_marks
+                FROM assignment_submissions s
+                JOIN students st ON s.student_id = st.student_id
+                JOIN users u ON st.user_id = u.user_id
+                JOIN assignments a ON s.assignment_id = a.assignment_id
+                WHERE s.assignment_id = ?
+                ORDER BY s.submission_date DESC
+            """, (assignment_id,))
+            submissions = cursor.fetchall()
+            cursor.close()
+            return [dict(submission) for submission in submissions]
+        except Exception as e:
+            st.error(f"❌ Error fetching assignment submissions: {str(e)}")
+            return []
+    
+    def grade_submission(self, submission_id, marks_obtained, feedback, graded_by):
+        """Grade a submission"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                UPDATE assignment_submissions 
+                SET marks_obtained = ?, feedback = ?, graded_by = ?, 
+                    graded_at = DATETIME('now'), status = 'graded'
+                WHERE submission_id = ?
+            """, (marks_obtained, feedback, graded_by, submission_id))
+            
+            # Also update the grades table
+            cursor.execute("""
+                SELECT assignment_id, student_id 
+                FROM assignment_submissions 
+                WHERE submission_id = ?
+            """, (submission_id,))
+            result = cursor.fetchone()
+            if result:
+                assignment_id, student_id = result
+                cursor.execute("""
+                    INSERT OR REPLACE INTO grades 
+                    (student_id, assignment_id, marks_obtained, remarks)
+                    VALUES (?, ?, ?, ?)
+                """, (student_id, assignment_id, marks_obtained, feedback))
+            
+            self.conn.commit()
+            cursor.close()
+            return True
+        except Exception as e:
+            st.error(f"❌ Error grading submission: {str(e)}")
+            return False
+    
+    def get_submission_by_id(self, submission_id):
+        """Get a specific submission by ID"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT s.*, st.roll_number, u.full_name as student_name,
+                       a.title as assignment_title, a.total_marks
+                FROM assignment_submissions s
+                JOIN students st ON s.student_id = st.student_id
+                JOIN users u ON st.user_id = u.user_id
+                JOIN assignments a ON s.assignment_id = a.assignment_id
+                WHERE s.submission_id = ?
+            """, (submission_id,))
+            submission = cursor.fetchone()
+            cursor.close()
+            return dict(submission) if submission else None
+        except Exception as e:
+            st.error(f"❌ Error fetching submission: {str(e)}")
+            return None
+    
+    def delete_assignment(self, assignment_id):
+        """Delete an assignment"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM assignments WHERE assignment_id = ?", (assignment_id,))
+            self.conn.commit()
+            cursor.close()
+            return True
+        except Exception as e:
+            st.error(f"❌ Error deleting assignment: {str(e)}")
+            return False
